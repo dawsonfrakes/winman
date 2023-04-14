@@ -1,60 +1,43 @@
 const std = @import("std");
 const w = std.os.windows;
 
-fn callback(hwnd: w.HWND, _: w.LPARAM) callconv(w.WINAPI) bool {
-    if ((w.user32.GetWindowLongA(hwnd, w.user32.GWL_EXSTYLE) & w.user32.WS_EX_TOOLWINDOW) > 0)
-        return true;
-    if (blk: {
-        var ti: TITLEBARINFO = undefined;
-        ti.cbSize = @sizeOf(TITLEBARINFO);
-        _ = GetTitleBarInfo(hwnd, &ti);
-        const STATE_SYSTEM_INVISIBLE = 0x00008000;
-        break :blk (ti.rgstate[0] & STATE_SYSTEM_INVISIBLE) > 0;
-    })
-        return true;
-    if (blk: {
-        var hwndTry = GetAncestor(hwnd, 3);
-        var hwndWalk: ?w.HWND = null;
-        while (hwndTry != hwndWalk) {
-            hwndWalk = hwndTry;
-            hwndTry = GetLastActivePopup(hwndWalk.?);
-            if (IsWindowVisible(hwndTry.?))
-                break;
-        }
-        break :blk hwndWalk != hwnd;
-    })
-        return true;
-    if (!IsWindowVisible(hwnd))
-        return true;
-    if (IsIconic(hwnd))
-        return true;
-    if (MonitorFromWindow(hwnd, 1) != monitor)
-        return true;
-    const DWMWA_CLOAKED = 14;
-    if (blk: {
-        var out: w.INT = w.FALSE;
-        const res = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &out, @sizeOf(@TypeOf(out)));
-        break :blk res >= 0 and out == w.TRUE;
-    })
-        return true;
-
-    var title: [1024]u8 = undefined;
-    var title_slice: []u8 = &title;
-    title_slice.len = @intCast(usize, GetWindowTextA(hwnd, &title, title.len));
+fn windowInAltTabList(hwnd: w.HWND) bool {
+    // var title: [1024]u8 = undefined;
+    // var title_slice: []u8 = &title;
+    // title_slice.len = @intCast(usize, GetWindowTextA(hwnd, &title, title.len));
 
     var class: [1024]u8 = undefined;
     var class_slice: []u8 = &class;
     class_slice.len = @intCast(usize, GetClassNameA(hwnd, &class, class.len));
 
-    if (std.mem.eql(u8, class_slice, "ApplicationFrameWindow"))
-        return true;
+    return MonitorFromWindow(hwnd, 1) == monitor and
+        IsWindowVisible(hwnd) and
+        !IsIconic(hwnd) and
+        (w.user32.GetWindowLongA(hwnd, w.user32.GWL_EXSTYLE) & w.user32.WS_EX_TOOLWINDOW) == 0 and
+        !std.mem.eql(u8, class_slice, "ApplicationFrameWindow") and
+        blk: {
+        var ti: TITLEBARINFO = undefined;
+        ti.cbSize = @sizeOf(TITLEBARINFO);
+        _ = GetTitleBarInfo(hwnd, &ti);
+        const STATE_SYSTEM_INVISIBLE = 0x00008000;
+        break :blk (ti.rgstate[0] & STATE_SYSTEM_INVISIBLE) == 0;
+    } and
+        blk: {
+        var cloaked: w.INT = w.FALSE;
+        const DWMWA_CLOAKED = 14;
+        _ = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, @sizeOf(@TypeOf(cloaked)));
+        break :blk cloaked == w.FALSE;
+    };
+}
 
-    //std.debug.print("{s}\n", .{class_slice});
-    // std.debug.print("{s}\n", .{title_slice});
+fn callback(hwnd: w.HWND, _: w.LPARAM) callconv(w.WINAPI) bool {
+    if (!windowInAltTabList(hwnd))
+        return true;
     hwnds.appendAssumeCapacity(hwnd);
     return true;
 }
 
+const HMONITOR = *opaque {};
 const TITLEBARINFO = extern struct {
     cbSize: w.DWORD,
     rcTitleBar: w.RECT,
@@ -73,7 +56,6 @@ extern "user32" fn GetMonitorInfoA(hMonitor: HMONITOR, lpmi: *MONITORINFO) callc
 extern "user32" fn GetLastActivePopup(hwnd: w.HWND) callconv(w.WINAPI) w.HWND;
 extern "user32" fn GetTitleBarInfo(hwnd: w.HWND, pti: *TITLEBARINFO) callconv(w.WINAPI) bool;
 extern "user32" fn GetAncestor(hwnd: w.HWND, gaFlags: w.UINT) callconv(w.WINAPI) ?w.HWND;
-extern "dwmapi" fn DwmGetWindowAttribute(hwnd: w.HWND, dwAttribute: w.DWORD, pvAttribute: w.PVOID, cbAttribute: w.DWORD) callconv(w.WINAPI) w.HRESULT;
 extern "user32" fn MonitorFromWindow(hwnd: w.HWND, dwFlags: w.DWORD) callconv(w.WINAPI) HMONITOR;
 extern "user32" fn MonitorFromPoint(pt: w.POINT, dwFlags: w.DWORD) callconv(w.WINAPI) HMONITOR;
 extern "user32" fn GetCursorPos(lpPoint: *w.POINT) callconv(w.WINAPI) bool;
@@ -82,14 +64,15 @@ extern "user32" fn IsIconic(hwnd: w.HWND) callconv(w.WINAPI) bool;
 extern "user32" fn GetClassNameA(hwnd: w.HWND, lpClassName: [*]u8, nMaxCount: c_int) callconv(w.WINAPI) c_int;
 extern "user32" fn GetWindowTextA(hwnd: w.HWND, lpString: [*]u8, nMaxCount: c_int) callconv(w.WINAPI) c_int;
 extern "user32" fn EnumWindows(lpEnumFunc: *const fn (hwnd: w.HWND, lp: w.LPARAM) callconv(w.WINAPI) bool, lp: w.LPARAM) callconv(w.WINAPI) bool;
+extern "dwmapi" fn DwmGetWindowAttribute(hwnd: w.HWND, dwAttribute: w.DWORD, pvAttribute: w.PVOID, cbAttribute: w.DWORD) callconv(w.WINAPI) w.HRESULT;
 
-const HMONITOR = *opaque {};
 var monitor: HMONITOR = undefined;
 var hwnds = std.BoundedArray(w.HWND, 1024){};
 
 // TODO
 // use WM_GETMINMAXINFO to deal with windows that have minimum sizes (Discord REEE)
 // (theoretical) Don't let popup windows be moved
+// Won't tile anything with the same window class as Settings
 pub fn main() void {
     const pt = blk: {
         var out: w.POINT = undefined;
@@ -110,8 +93,8 @@ pub fn main() void {
     const master_width = @floatToInt(i32, @intToFloat(f32, mon_width) * master_factor);
     const slave_width = @floatToInt(i32, @intToFloat(f32, mon_width) * (1.0 - master_factor));
 
-    const num_slaves = @intCast(i32, hwnds.len - 1);
-    const slave_height = @divFloor(mon_height, num_slaves);
+    const num_slaves = @intCast(i32, hwnds.len) - 1;
+    const slave_height = if (num_slaves != 0) @divFloor(mon_height, num_slaves) else 0;
 
     for (hwnds.constSlice(), 0..) |hwnd, i| {
         var window_rect: w.RECT = undefined;
@@ -128,7 +111,7 @@ pub fn main() void {
 
         const win_x = mi.rcWork.left - win_frame_padding_left + (if (i != 0) master_width else 0);
         const win_y = mi.rcWork.top - win_frame_padding_top + (if (i != 0) @intCast(i32, i - 1) * slave_height else 0);
-        const win_width = (if (i != 0) slave_width else master_width) + win_frame_padding_left + win_frame_padding_right;
+        const win_width = (if (i != 0) slave_width else (if (hwnds.len != 1) master_width else mon_width)) + win_frame_padding_left + win_frame_padding_right;
         const win_height = (if (i != 0) slave_height else mon_height) + win_frame_padding_top + win_frame_padding_bottom;
 
         const SWP_ASYNCWINDOWPOS = 0x4000;
