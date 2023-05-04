@@ -6,6 +6,7 @@ I could've claimed it was the G-man of windows but that would limit my ability t
 
 ## Usage
 
+Dependencies: zig (master)
 ```console
 $ zig run winman.zig
 ```
